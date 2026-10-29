@@ -50,7 +50,7 @@ on:
         default: 'twrp_X6855'
 
       BUILD_TARGET:
-        description: 'Build target without image suffix'
+        description: 'Build target'
         required: true
         default: 'vendorbootimage'
 
@@ -71,18 +71,19 @@ jobs:
 
       - name: Initialize workspace
         id: pwd
+        shell: bash
         run: |
           mkdir -p "$GITHUB_WORKSPACE/workspace"
           echo "workspace-folder=$GITHUB_WORKSPACE/workspace" >> "$GITHUB_OUTPUT"
 
       - name: Prepare build environment
         working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+        shell: bash
         run: |
-          set -euo pipefail
+          set -eo pipefail
 
           sudo apt-get update
-          sudo apt-get install -y \
-            git python3 tar aria2
+          sudo apt-get install -y git python3 tar aria2
 
           git clone https://gitlab.com/OrangeFox/misc/scripts
           cd scripts
@@ -111,8 +112,9 @@ jobs:
         env:
           SYNC_URL: ${{ github.event.inputs.SYNC_URL }}
           MANIFEST_BRANCH: ${{ github.event.inputs.MANIFEST_BRANCH }}
+        shell: bash
         run: |
-          set -euo pipefail
+          set -eo pipefail
 
           git clone "$SYNC_URL" sync
           cd sync
@@ -128,11 +130,11 @@ jobs:
           TREE_URL: ${{ github.event.inputs.DEVICE_TREE_URL }}
           TREE_BRANCH: ${{ github.event.inputs.DEVICE_TREE_BRANCH }}
           DEVICE_PATH: ${{ github.event.inputs.DEVICE_PATH }}
+        shell: bash
         run: |
-          set -euo pipefail
+          set -eo pipefail
 
           cd "fox_$MANIFEST_BRANCH"
-
           mkdir -p "$(dirname "$DEVICE_PATH")"
 
           git clone \
@@ -151,8 +153,9 @@ jobs:
           COMMON_URL: ${{ github.event.inputs.COMMON_TREE_URL }}
           COMMON_PATH: ${{ github.event.inputs.COMMON_PATH }}
           TREE_BRANCH: ${{ github.event.inputs.DEVICE_TREE_BRANCH }}
+        shell: bash
         run: |
-          set -euo pipefail
+          set -eo pipefail
 
           cd "fox_$MANIFEST_BRANCH"
           mkdir -p "$(dirname "$COMMON_PATH")"
@@ -173,8 +176,9 @@ jobs:
         env:
           MANIFEST_BRANCH: ${{ github.event.inputs.MANIFEST_BRANCH }}
           DEVICE_PATH: ${{ github.event.inputs.DEVICE_PATH }}
+        shell: bash
         run: |
-          set -euo pipefail
+          set -eo pipefail
 
           cd "fox_$MANIFEST_BRANCH"
 
@@ -188,8 +192,7 @@ jobs:
             exit 1
           }
 
-          echo "Device tree configuration files found."
-          echo "Checking lunch product during build."
+          echo "Device configuration files found."
 
       - name: Build vendor boot image
         working-directory: ${{ steps.pwd.outputs.workspace-folder }}
@@ -197,11 +200,13 @@ jobs:
           MANIFEST_BRANCH: ${{ github.event.inputs.MANIFEST_BRANCH }}
           MAKEFILE_NAME: ${{ github.event.inputs.MAKEFILE_NAME }}
           BUILD_TARGET: ${{ github.event.inputs.BUILD_TARGET }}
-          DEVICE_NAME: ${{ github.event.inputs.DEVICE_NAME }}
+        shell: bash
         run: |
-          set -euo pipefail
+          set -eo pipefail
 
           cd "fox_$MANIFEST_BRANCH"
+
+          # Do not use `set -u` here.
           source build/envsetup.sh
 
           export ALLOW_MISSING_DEPENDENCIES=true
@@ -216,8 +221,9 @@ jobs:
         env:
           MANIFEST_BRANCH: ${{ github.event.inputs.MANIFEST_BRANCH }}
           DEVICE_NAME: ${{ github.event.inputs.DEVICE_NAME }}
+        shell: bash
         run: |
-          set -euo pipefail
+          set -eo pipefail
 
           OUT="fox_$MANIFEST_BRANCH/out/target/product/$DEVICE_NAME"
 
@@ -229,9 +235,9 @@ jobs:
           find "$OUT" -maxdepth 1 -type f \
             \( -name '*.img' -o -name '*.zip' \) -print
 
-          if ! find "$OUT" -maxdepth 1 -type f \
-            -name 'vendor_boot.img' -print -quit | grep -q .; then
-            echo "::error::vendor_boot.img was not found"
+          if [ ! -f "$OUT/vendor_boot.img" ]; then
+            echo "::error::vendor_boot.img not found at $OUT"
+            echo "Check the actual output filename and device tree configuration."
             exit 1
           fi
 
