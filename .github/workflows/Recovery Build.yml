@@ -1,165 +1,36 @@
 
-name: TWRP Build - Infinix X6855
-
-on:
-  workflow_dispatch:
-
-jobs:
-  build:
-    if: github.event.repository.owner.id == github.event.sender.id
-    runs-on: ubuntu-24.04
-    timeout-minutes: 360
-    permissions:
-      contents: write
-
-    env:
-      SOURCE_DIR: ${{ github.workspace }}/android-source
-      TREE_URL: https://github.com/M0z41D/Device_Tree_X6855.git
-      TREE_BRANCH: main
-
-    steps:
-      - name: Checkout workflow
-        uses: actions/checkout@v4
-
-      - name: Free disk space
-        uses: rokibhasansagar/slimhub_actions@main
-
-      - name: Install build dependencies
-        shell: bash
-        run: |
-          set -euxo pipefail
-          sudo apt-get update
-          sudo apt-get install -y \
-            git git-lfs curl python3 \
-            rsync unzip zip bc bison \
-            build-essential flex g++-multilib \
-            gcc-multilib libssl-dev \
-            libelf-dev libncurses-dev \
-            libxml2-utils xsltproc \
-            zlib1g-dev lz4 aria2
-
-          sudo mkdir -p /usr/local/bin
-          sudo curl -fsSL \
-            https://storage.googleapis.com/git-repo-downloads/repo \
-            -o /usr/local/bin/repo
-          sudo chmod a+x /usr/local/bin/repo
-          git lfs install
-
-      - name: Install Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "21"
-
-      - name: Initialize OmniROM Android 16 source
-        shell: bash
-        run: |
-          set -euxo pipefail
-          mkdir -p "$SOURCE_DIR"
-          cd "$SOURCE_DIR"
-
-          repo init \
-            --depth=1 \
-            -u https://github.com/omnirom/android.git \
-            -b android-16 \
-            --git-lfs
-
-      - name: Sync source
+      - name: Fix SSH URLs and Sync Source
         shell: bash
         run: |
           set -euxo pipefail
           cd "$SOURCE_DIR"
 
+          echo "=== Fix GitHub SSH remotes in manifests ==="
+
+          # Ubah URL GitHub SSH menjadi HTTPS
+          find .repo/manifests .repo/local_manifests \
+            -type f -name '*.xml' 2>/dev/null \
+            -exec sed -i \
+              -e 's#ssh://git@github\.com/omnirom#https://github.com/omnirom#g' \
+              -e 's#ssh://git@github\.com/#https://github.com/#g' \
+              -e 's#git@github\.com:#https://github.com/#g' \
+              {} + || true
+
+          # Pastikan repo tidak memakai SSH ControlMaster
+          export GIT_SSH=ssh
+
+          echo "=== Remaining GitHub SSH URLs ==="
+          grep -R -n -E \
+            'ssh://git@github\.com|git@github\.com:' \
+            .repo/manifests .repo/local_manifests \
+            2>/dev/null || true
+
+          echo "=== Sync source ==="
           repo sync \
             -c \
             --force-sync \
             --no-clone-bundle \
             --no-tags \
             -j2
-
-          repo forall -c 'git lfs pull' || true
-
-      - name: Clone X6855 device tree
-        shell: bash
-        run: |
-          set -euxo pipefail
-          cd "$SOURCE_DIR"
-
-          mkdir -p device/infinix
-          git clone \
-            --depth=1 \
-            --single-branch \
-            --branch "$TREE_BRANCH" \
-            "$TREE_URL" \
-            device/infinix/X6855
-
-      - name: Verify device tree and source
-        shell: bash
-        run: |
-          set -euxo pipefail
-          cd "$SOURCE_DIR"
-
-          test -f device/infinix/X6855/BoardConfig.mk
-          test -f device/infinix/X6855/device.mk
-          test -f device/infinix/X6855/AndroidProducts.mk
-          test -f device/infinix/X6855/twrp_X6855.mk
-
-          if [ ! -f vendor/omni/config/common.mk ]; then
-            echo "::error::Omni common configuration is missing."
-            echo "Check manifest sync and vendor/omni project."
-            exit 1
-          fi
-
-          echo "=== Tree commit ==="
-          git -C device/infinix/X6855 log -1 --oneline
-
-          echo "=== Build configuration ==="
-          cat device/infinix/X6855/twrp_X6855.mk
-
-      - name: Configure swap
-        uses: pierotofy/set-swap-space@master
-        with:
-          swap-size-gb: 12
-
-      - name: Build TWRP vendor_boot
-        shell: bash
-        run: |
-          set -euxo pipefail
-          cd "$SOURCE_DIR"
-
-          export ALLOW_MISSING_DEPENDENCIES=true
-          source build/envsetup.sh
-
-          lunch twrp_X6855-eng
-          mka adbd vendorbootimage -j2
-
-      - name: Collect image
-        if: success()
-        shell: bash
-        run: |
-          set -euxo pipefail
-          cd "$SOURCE_DIR"
-
-          IMAGE="$(find out/target/product \
-            -type f -name vendor_boot.img -print -quit)"
-
-          if [ -z "$IMAGE" ]; then
-            echo "::error::vendor_boot.img not found"
-            exit 1
-          fi
-
-          mkdir -p "$GITHUB_WORKSPACE/release"
-          cp "$IMAGE" "$GITHUB_WORKSPACE/release/vendor_boot.img"
-          sha256sum "$GITHUB_WORKSPACE/release/vendor_boot.img"
-
-      - name: Upload artifact
-        if: success()
-        uses: actions/upload-artifact@v4
-        with:
-          name: TWRP-X6855-vendor-boot
-          path: release/vendor_boot.img
-          if-no-files-found: error
-          retention-days: 7
+            
           
-
-                    
