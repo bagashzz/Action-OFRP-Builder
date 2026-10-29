@@ -1,36 +1,206 @@
 
-      - name: Fix SSH URLs and Sync Source
+
+name: Recovery Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: recovery-build-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build TWRP - Infinix X6855
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+
+    env:
+      SOURCE_DIR: ${{ github.workspace }}/android-source
+      DEVICE_TREE_URL: https://github.com/M0z41D/Device_Tree_X6855.git
+      DEVICE_TREE_BRANCH: main
+      DEVICE_PATH: device/infinix/X6855
+
+    steps:
+      - name: Checkout builder
+        uses: actions/checkout@v4
+
+      - name: Free disk space
+        uses: rokibhasansagar/slimhub_actions@main
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            bc bison build-essential ccache curl flex \
+            g++-multilib gcc-multilib git git-lfs gnupg \
+            gperf imagemagick lib32readline-dev lib32z1-dev \
+            libelf-dev liblz4-tool libncurses-dev libssl-dev \
+            libxml2 libxml2-utils lzop pngcrush rsync \
+            squashfs-tools unzip xsltproc zip zlib1g-dev \
+            python3 python-is-python3 openjdk-21-jdk
+
+          git lfs install
+
+          mkdir -p "$HOME/bin"
+          curl -fsSL \
+            https://storage.googleapis.com/git-repo-downloads/repo \
+            -o "$HOME/bin/repo"
+
+          chmod +x "$HOME/bin/repo"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+
+      - name: Initialize Android source
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          mkdir -p "$SOURCE_DIR"
+          cd "$SOURCE_DIR"
+
+          repo init \
+            -u https://github.com/omnirom/android.git \
+            -b android-16 \
+            --git-lfs
+
+      - name: Fix SSH URLs and sync source
         shell: bash
         run: |
           set -euxo pipefail
           cd "$SOURCE_DIR"
 
-          echo "=== Fix GitHub SSH remotes in manifests ==="
+          # Rewrite public GitHub SSH URLs to HTTPS.
+          git config --global \
+            url."https://github.com/".insteadOf \
+            "git@github.com:"
 
-          # Ubah URL GitHub SSH menjadi HTTPS
-          find .repo/manifests .repo/local_manifests \
-            -type f -name '*.xml' 2>/dev/null \
-            -exec sed -i \
-              -e 's#ssh://git@github\.com/omnirom#https://github.com/omnirom#g' \
-              -e 's#ssh://git@github\.com/#https://github.com/#g' \
-              -e 's#git@github\.com:#https://github.com/#g' \
-              {} + || true
+          git config --global --add \
+            url."https://github.com/".insteadOf \
+            "ssh://git@github.com/"
 
-          # Pastikan repo tidak memakai SSH ControlMaster
-          export GIT_SSH=ssh
+          git config --global --add \
+            url."https://github.com/".insteadOf \
+            "git+ssh://git@github.com/"
 
-          echo "=== Remaining GitHub SSH URLs ==="
+          # Rewrite public GitLab SSH URLs to HTTPS too.
+          git config --global --add \
+            url."https://gitlab.com/".insteadOf \
+            "git@gitlab.com:"
+
+          git config --global --add \
+            url."https://gitlab.com/".insteadOf \
+            "ssh://git@gitlab.com/"
+
+          git config --global --add \
+            url."https://gitlab.com/".insteadOf \
+            "git+ssh://git@gitlab.com/"
+
+          # Normalize SSH URLs explicitly written in manifests.
+          if [ -d .repo/manifests ]; then
+            find .repo/manifests \
+              -type f -name '*.xml' \
+              -exec sed -i \
+                -e 's#ssh://git@github\.com/#https://github.com/#g' \
+                -e 's#git@github\.com:#https://github.com/#g' \
+                -e 's#ssh://git@gitlab\.com/#https://gitlab.com/#g' \
+                -e 's#git@gitlab\.com:#https://gitlab.com/#g' \
+                {} +
+          fi
+
+          echo "=== Remaining SSH URLs ==="
           grep -R -n -E \
-            'ssh://git@github\.com|git@github\.com:' \
+            'git@github\.com:|ssh://git@github\.com/|git@gitlab\.com:|ssh://git@gitlab\.com/' \
             .repo/manifests .repo/local_manifests \
             2>/dev/null || true
 
-          echo "=== Sync source ==="
+          echo "=== Sync Android source ==="
           repo sync \
             -c \
             --force-sync \
             --no-clone-bundle \
             --no-tags \
             -j2
-            
+
+      - name: Clone X6855 device tree
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          mkdir -p "$SOURCE_DIR/device/infinix"
+
+          git clone \
+            --depth=1 \
+            --branch "$DEVICE_TREE_BRANCH" \
+            "$DEVICE_TREE_URL" \
+            "$SOURCE_DIR/$DEVICE_PATH"
+
+          test -f "$SOURCE_DIR/$DEVICE_PATH/twrp_X6855.mk"
+          test -f "$SOURCE_DIR/$DEVICE_PATH/AndroidProducts.mk"
+
+          echo "=== Device tree downloaded ==="
+          ls -la "$SOURCE_DIR/$DEVICE_PATH"
+
+      - name: Verify build configuration
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd "$SOURCE_DIR"
+
+          echo "=== TWRP product configuration ==="
+          sed -n '1,200p' \
+            "$DEVICE_PATH/twrp_X6855.mk"
+
+          if [ ! -f vendor/omni/config/common.mk ]; then
+            echo "::error::Missing vendor/omni/config/common.mk"
+            echo "The selected source manifest may be incompatible with this device tree."
+            exit 1
+          fi
+
+      - name: Build recovery
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd "$SOURCE_DIR"
+
+          source build/envsetup.sh
+          lunch twrp_X6855-eng
+          mka adbd vendorbootimage -j2
+
+      - name: Collect output images
+        if: always()
+        shell: bash
+        run: |
+          set -u
+
+          mkdir -p "$GITHUB_WORKSPACE/output"
+
+          if [ -d "$SOURCE_DIR/out/target/product" ]; then
+            find "$SOURCE_DIR/out/target/product" \
+              -type f \
+              \( -name 'vendor_boot.img' \
+              -o -name 'boot.img' \
+              -o -name 'recovery.img' \) \
+              -exec cp -v {} "$GITHUB_WORKSPACE/output/" \;
+          fi
+
+          echo "=== Collected images ==="
+          ls -lh "$GITHUB_WORKSPACE/output" || true
+
+      - name: Upload recovery artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: X6855-recovery-images
+          path: output/*
+          if-no-files-found: warn
+          retention-days: 7
           
