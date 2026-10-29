@@ -1,23 +1,23 @@
 
-name: Recovery Build - OrangeFox X6855
+name: Recovery Build - X6855 Development Tree
 
 on:
   workflow_dispatch:
     inputs:
       MANIFEST_BRANCH:
-        description: OrangeFox manifest branch
+        description: Source manifest branch
         required: true
         default: "14.1"
 
       DEVICE_TREE_URL:
-        description: Your OrangeFox device tree
+        description: X6855 development device tree
         required: true
-        default: "https://github.com/bagashzz/fox_device_infinix_X6855.git"
+        default: "https://github.com/M0z41D/Device_Tree_X6855.git"
 
       DEVICE_TREE_BRANCH:
-        description: OrangeFox device tree branch
+        description: Device tree branch
         required: true
-        default: "fox_14.1"
+        default: "main"
 
       BUILD_VARIANT:
         description: Build variant
@@ -53,7 +53,7 @@ jobs:
         id: workspace
         shell: bash
         run: |
-          set -eo pipefail
+          set -euo pipefail
           mkdir -p "$GITHUB_WORKSPACE/workspace"
           echo "path=$GITHUB_WORKSPACE/workspace" >> "$GITHUB_OUTPUT"
 
@@ -61,15 +61,12 @@ jobs:
         working-directory: ${{ steps.workspace.outputs.path }}
         shell: bash
         run: |
-          set -eo pipefail
-
+          set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y \
-            git python3 tar aria2 curl rsync unzip
+          sudo apt-get install -y git python3 tar aria2 curl rsync unzip
 
           git clone https://gitlab.com/OrangeFox/misc/scripts
           cd scripts
-
           sudo bash setup/android_build_env.sh
 
           sed -i 's/cd -/cd ../g' setup/install_android_sdk.sh
@@ -81,13 +78,13 @@ jobs:
           distribution: zulu
           java-version: "17"
 
-      - name: Sync OrangeFox 14.1
+      - name: Sync source
         working-directory: ${{ steps.workspace.outputs.path }}
         env:
           MANIFEST_BRANCH: ${{ inputs.MANIFEST_BRANCH }}
         shell: bash
         run: |
-          set -eo pipefail
+          set -euo pipefail
 
           git clone https://gitlab.com/OrangeFox/sync.git sync
           cd sync
@@ -96,7 +93,7 @@ jobs:
             --branch "$MANIFEST_BRANCH" \
             --path "$GITHUB_WORKSPACE/workspace/fox_$MANIFEST_BRANCH"
 
-      - name: Clone OrangeFox device tree
+      - name: Clone X6855 development tree
         working-directory: ${{ steps.workspace.outputs.path }}
         env:
           MANIFEST_BRANCH: ${{ inputs.MANIFEST_BRANCH }}
@@ -104,15 +101,12 @@ jobs:
           TREE_BRANCH: ${{ inputs.DEVICE_TREE_BRANCH }}
         shell: bash
         run: |
-          set -eo pipefail
+          set -euo pipefail
 
           cd "fox_$MANIFEST_BRANCH"
-
           mkdir -p device/infinix
 
-          git clone \
-            --depth=1 \
-            --single-branch \
+          git clone --depth=1 --single-branch \
             --branch "$TREE_BRANCH" \
             "$TREE_URL" \
             device/infinix/X6855
@@ -123,7 +117,7 @@ jobs:
           MANIFEST_BRANCH: ${{ inputs.MANIFEST_BRANCH }}
         shell: bash
         run: |
-          set -eo pipefail
+          set -euo pipefail
           cd "fox_$MANIFEST_BRANCH"
 
           DEVICE="device/infinix/X6855"
@@ -132,40 +126,36 @@ jobs:
             AndroidProducts.mk \
             BoardConfig.mk \
             device.mk \
-            fox_X6855.mk \
-            fox.mk \
-            twrp.mk \
-            vendorsetup.sh
+            twrp_X6855.mk
           do
             if [ ! -f "$DEVICE/$file" ]; then
-              echo "::error::Missing device file: $DEVICE/$file"
+              echo "::error::Missing required file: $DEVICE/$file"
               exit 1
             fi
           done
 
-          echo "=== Device tree branch ==="
-          git -C "$DEVICE" branch --show-current
+          echo "=== Device tree commit ==="
           git -C "$DEVICE" log -1 --oneline
 
-          echo "=== Product configuration ==="
+          echo "=== Product registration ==="
           cat "$DEVICE/AndroidProducts.mk"
-          cat "$DEVICE/fox_X6855.mk"
 
-          echo "=== Required TWRP configuration ==="
-          if [ ! -f vendor/twrp/config/common.mk ]; then
-            echo "::error::vendor/twrp/config/common.mk is missing"
-            echo "Check the synced OrangeFox source and manifest."
+          echo "=== TWRP product configuration ==="
+          cat "$DEVICE/twrp_X6855.mk"
+
+          if [ ! -f vendor/omni/config/common.mk ]; then
+            echo "::error::vendor/omni/config/common.mk is missing."
+            echo "The selected source does not provide the dependency required by twrp_X6855.mk."
+            echo "Use a compatible TWRP source manifest before building."
             exit 1
           fi
-
-          echo "Device tree and required configuration checks passed."
 
       - name: Configure swap
         uses: pierotofy/set-swap-space@master
         with:
           swap-size-gb: 12
 
-      - name: Build OrangeFox vendor boot
+      - name: Build TWRP vendor boot
         working-directory: ${{ steps.workspace.outputs.path }}
         env:
           MANIFEST_BRANCH: ${{ inputs.MANIFEST_BRANCH }}
@@ -173,52 +163,47 @@ jobs:
           BUILD_TARGET: ${{ inputs.BUILD_TARGET }}
         shell: bash
         run: |
-          set -eo pipefail
+          set -euo pipefail
           cd "fox_$MANIFEST_BRANCH"
 
           export ALLOW_MISSING_DEPENDENCIES=true
-
           source build/envsetup.sh
 
-          LUNCH_COMBO="fox_X6855-ap2a-${BUILD_VARIANT}"
+          LUNCH_COMBO="twrp_X6855-$BUILD_VARIANT"
 
           echo "Lunch combo: $LUNCH_COMBO"
-          echo "Build target: $BUILD_TARGET"
-
           lunch "$LUNCH_COMBO"
 
-          echo "=== Selected configuration ==="
           echo "TARGET_PRODUCT=$TARGET_PRODUCT"
           echo "TARGET_DEVICE=$TARGET_DEVICE"
           echo "TARGET_BUILD_VARIANT=$TARGET_BUILD_VARIANT"
 
           mka adbd "$BUILD_TARGET" -j"$(nproc --all)"
 
-      - name: Verify and collect output
+      - name: Verify and collect image
         if: success()
         working-directory: ${{ steps.workspace.outputs.path }}
         env:
           MANIFEST_BRANCH: ${{ inputs.MANIFEST_BRANCH }}
         shell: bash
         run: |
-          set -eo pipefail
+          set -euo pipefail
           cd "fox_$MANIFEST_BRANCH"
-
-          OUT="out/target/product/X6855"
 
           echo "=== Generated images ==="
           find out/target/product -type f \
             \( -name '*.img' -o -name '*.zip' \) -print
 
-          if [ ! -f "$OUT/vendor_boot.img" ]; then
+          IMAGE="$(find out/target/product \
+            -type f -name vendor_boot.img -print -quit)"
+
+          if [ -z "$IMAGE" ]; then
             echo "::error::vendor_boot.img was not generated."
-            echo "Check the build logs and actual output location."
             exit 1
           fi
 
           mkdir -p "$GITHUB_WORKSPACE/release"
-          cp "$OUT/vendor_boot.img" \
-            "$GITHUB_WORKSPACE/release/vendor_boot.img"
+          cp "$IMAGE" "$GITHUB_WORKSPACE/release/vendor_boot.img"
 
           sha256sum "$GITHUB_WORKSPACE/release/vendor_boot.img"
 
@@ -226,7 +211,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: OrangeFox-X6855-vendor-boot
+          name: TWRP-X6855-vendor-boot
           path: release/vendor_boot.img
           if-no-files-found: error
           retention-days: 7
@@ -235,12 +220,13 @@ jobs:
         if: success()
         uses: softprops/action-gh-release@v2
         with:
-          name: OrangeFox X6855 - ${{ github.run_number }}
-          tag_name: ofox-x6855-${{ github.run_id }}
+          name: TWRP X6855 - ${{ github.run_number }}
+          tag_name: twrp-x6855-${{ github.run_id }}
           body: |
-            Device: Infinix Note 50 Pro (X6855)
-            Manifest branch: ${{ inputs.MANIFEST_BRANCH }}
-            Device tree: ${{ inputs.DEVICE_TREE_BRANCH }}
+            Device: Infinix Note 50 Pro 4G (X6855)
+            Device tree: ${{ inputs.DEVICE_TREE_URL }}
+            Device tree branch: ${{ inputs.DEVICE_TREE_BRANCH }}
+            Source manifest branch: ${{ inputs.MANIFEST_BRANCH }}
             Target: ${{ inputs.BUILD_TARGET }}
 
             Verify compatibility before flashing.
@@ -248,5 +234,4 @@ jobs:
           fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          
           
